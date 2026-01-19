@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Tab Screenshot Sequence",
+  "version": "1.1",
+  "description": "Captures screenshots of tabs to the right of the active tab.",
+  "permissions": [
+    "tabs",
+    "downloads",
+    "activeTab",
+    "notifications",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "icons": {
+    "128": "icons/icon.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Capture Screenshots",
+    "default_icon": "icons/icon.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
