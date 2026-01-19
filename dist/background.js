@@ -9,7 +9,7 @@
 () {
 
 
-// Background script with enhanced error handling and notifications
+// Background script with fixed desktop capture support
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -51,15 +51,28 @@ function isRestrictedUrl(url) {
         url.startsWith('about:') ||
         url.startsWith('chrome-extension://');
 }
+function setupOffscreenDocument(path) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const existingContexts = yield chrome.runtime.getContexts({
+            contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT]
+        });
+        if (existingContexts.length > 0) {
+            return;
+        }
+        yield chrome.offscreen.createDocument({
+            url: path,
+            reasons: [chrome.offscreen.Reason.DISPLAY_MEDIA],
+            justification: 'Recording window for screenshot sequence'
+        });
+    });
+}
 function captureNext() {
     return __awaiter(this, void 0, void 0, function* () {
-        // Check for cancellation
         if (state.isCancelled) {
             yield finishCapture(true);
             return;
         }
         if (state.currentIndex >= state.tabsToCapture.length) {
-            // Done
             yield finishCapture(false);
             return;
         }
@@ -70,9 +83,7 @@ function captureNext() {
             captureNext();
             return;
         }
-        // Update Badge
         chrome.action.setBadgeText({ text: `${state.currentIndex + 1}/${state.tabsToCapture.length}` });
-        // Check for restricted URLs
         if (isRestrictedUrl(tab.url)) {
             console.warn(`Skipping restricted URL: ${tab.url}`);
             state.skippedCount++;
@@ -82,10 +93,7 @@ function captureNext() {
         }
         // Activate tab
         try {
-            const updateResult = yield chrome.tabs.update(tab.id, { active: true });
-            if (updateResult && updateResult.status === 'loading') {
-                // Tab is loading
-            }
+            yield chrome.tabs.update(tab.id, { active: true });
         }
         catch (e) {
             console.error(`Failed to activate tab ${tab.id}:`, e);
@@ -94,33 +102,18 @@ function captureNext() {
             captureNext();
             return;
         }
-        // Helper wait function
         const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-        // Wait for render
-        yield wait(800);
+        yield wait(1200); // Longer wait for window capture to settle
         try {
-            // Retry logic for capture
-            let dataUrl;
-            let attempts = 0;
-            while (!dataUrl && attempts < 3) {
-                try {
-                    dataUrl = yield chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-                }
-                catch (captureErr) {
-                    console.warn(`Capture attempt ${attempts + 1} failed for tab ${tab.id}:`, captureErr);
-                    attempts++;
-                    if (attempts < 3) {
-                        yield wait(500);
-                    }
-                }
-            }
-            if (!dataUrl) {
-                throw new Error("Failed to capture tab after 3 attempts");
+            // Request frame from offscreen
+            const response = yield chrome.runtime.sendMessage({ type: 'CAPTURE_FRAME' });
+            if (!response || !response.dataUrl) {
+                throw new Error((response === null || response === void 0 ? void 0 : response.error) || "Failed to capture frame from offscreen");
             }
             const folderName = `tab-screenshots/${state.timestamp}`;
             const fileName = `${folderName}/tab-${(state.currentIndex + 1).toString().padStart(2, '0')}.png`;
             yield chrome.downloads.download({
-                url: dataUrl,
+                url: response.dataUrl,
                 filename: fileName,
                 saveAs: false
             });
@@ -152,17 +145,15 @@ function startCapture() {
             showNotification('No Tabs', 'No tabs found to capture.');
             return;
         }
-        // Filter out restricted URLs for initial count
         const capturableTabs = targetTabs.filter(t => !isRestrictedUrl(t.url));
         if (capturableTabs.length === 0) {
-            showNotification('No Capturable Tabs', 'All tabs are restricted URLs (chrome://, etc.) and cannot be captured.');
+            showNotification('No Capturable Tabs', 'All tabs are restricted URLs and cannot be captured.');
             return;
         }
-        // Initialize state
         state = {
             isCapturing: true,
             originalTabId: currentTab.id || null,
-            tabsToCapture: targetTabs, // Include all, we'll skip restricted ones
+            tabsToCapture: targetTabs,
             currentIndex: 0,
             successCount: 0,
             failureCount: 0,
@@ -172,7 +163,23 @@ function startCapture() {
         // @ts-ignore
         state.timestamp = getTimestamp();
         chrome.action.setBadgeBackgroundColor({ color: '#4285f4' });
-        captureNext();
+        try {
+            yield setupOffscreenDocument('offscreen.html');
+            // Initialize display capture in offscreen document
+            const initResponse = yield chrome.runtime.sendMessage({ type: 'INIT_DISPLAY_CAPTURE' });
+            if (!initResponse || !initResponse.success) {
+                throw new Error((initResponse === null || initResponse === void 0 ? void 0 : initResponse.error) || 'Failed to initialize display capture');
+            }
+            // Give stream time to fully initialize
+            yield new Promise(r => setTimeout(r, 800));
+            captureNext();
+        }
+        catch (e) {
+            console.error("Failed to setup offscreen", e);
+            showNotification('Error', 'Failed to initialize screen capture. Make sure you selected a window to share.');
+            state.isCapturing = false;
+            chrome.action.setBadgeText({ text: '' });
+        }
     });
 }
 function cancelCapture() {
@@ -187,6 +194,14 @@ function finishCapture(cancelled) {
     return __awaiter(this, void 0, void 0, function* () {
         state.isCapturing = false;
         chrome.action.setBadgeText({ text: '' });
+        // Stop and close offscreen
+        try {
+            yield chrome.runtime.sendMessage({ type: 'STOP_CAPTURE' });
+            yield chrome.offscreen.closeDocument();
+        }
+        catch (e) {
+            // Ignore if already closed
+        }
         // Restore original tab
         if (state.originalTabId) {
             try {
@@ -196,9 +211,7 @@ function finishCapture(cancelled) {
                 console.error("Failed to restore tab", e);
             }
         }
-        // Show completion notification
         if (!cancelled) {
-            const total = state.successCount + state.failureCount + state.skippedCount;
             let message = `✓ ${state.successCount} captured`;
             if (state.skippedCount > 0) {
                 message += ` | ⏭ ${state.skippedCount} skipped`;

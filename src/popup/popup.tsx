@@ -30,14 +30,14 @@ const Popup = () => {
     };
 
     checkStatus();
-    const interval = setInterval(checkStatus, 500); // Poll every 500ms for live updates
+    const interval = setInterval(checkStatus, 500);
     return () => clearInterval(interval);
   }, []);
 
   const handleStart = () => {
     chrome.runtime.sendMessage({ type: 'START_CAPTURE' });
     setStatus({ ...status, isCapturing: true });
-    window.close(); // Close popup immediately
+    window.close();
   };
 
   const handleCancel = () => {
@@ -63,8 +63,11 @@ const Popup = () => {
         </div>
       ) : (
         <div>
-          <p style={{ fontSize: '12px', color: '#666' }}>
+          <p style={{ fontSize: '12px', color: '#666', marginBottom: '8px' }}>
             Captures current tab and all tabs to the right
+          </p>
+          <p style={{ fontSize: '11px', color: '#ff6b00', marginBottom: '12px', fontWeight: 'bold' }}>
+            ⚠️ In the share dialog, select "Window" (not "Tab")
           </p>
           <button onClick={handleStart}>Start Capture Sequence</button>
         </div>
