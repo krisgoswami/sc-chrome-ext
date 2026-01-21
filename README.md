@@ -8,11 +8,8 @@ A Chrome Extension (Manifest V3) that automates the process of capturing screens
 - **Smart Waiting**: Waits for tabs to render before capturing (800ms default).
 - **Robustness**: Includes retry logic (3 attempts per tab) to handle rendering issues.
 - **Organized Output**: Saves screenshots in timestamped folders (e.g., `Downloads/tab-screenshots/2026-01-19_10-00-00/tab-01.png`).
-- **Progress Tracking**: Live progress display in popup + badge counter.
 - **Completion Notifications**: Browser notification when done with success/failure/skipped counts.
-- **Cancel Anytime**: Stop capture mid-process with one click.
 - **Error Handling**: Gracefully handles restricted URLs, permission issues, and edge cases.
-- **Live Stats**: Real-time display of successful, failed, and skipped captures.
 
 ## Tech Stack
 
