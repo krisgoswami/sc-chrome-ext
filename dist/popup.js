@@ -30449,7 +30449,14 @@ const Popup = () => {
         failureCount: 0,
         skippedCount: 0
     });
+    const [captureMode, setCaptureMode] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)('page');
     (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
+        // Load saved preference
+        chrome.storage.local.get(['captureMode'], (result) => {
+            if (result.captureMode && (result.captureMode === 'page' || result.captureMode === 'window')) {
+                setCaptureMode(result.captureMode);
+            }
+        });
         // Poll for status
         const checkStatus = () => {
             chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (response) => {
@@ -30459,13 +30466,18 @@ const Popup = () => {
             });
         };
         checkStatus();
-        const interval = setInterval(checkStatus, 500); // Poll every 500ms for live updates
+        const interval = setInterval(checkStatus, 500);
         return () => clearInterval(interval);
     }, []);
+    const handleModeChange = (e) => {
+        const mode = e.target.value;
+        setCaptureMode(mode);
+        chrome.storage.local.set({ captureMode: mode });
+    };
     const handleStart = () => {
-        chrome.runtime.sendMessage({ type: 'START_CAPTURE' });
+        chrome.runtime.sendMessage({ type: 'START_CAPTURE', mode: captureMode });
         setStatus(Object.assign(Object.assign({}, status), { isCapturing: true }));
-        window.close(); // Close popup immediately
+        window.close();
     };
     const handleCancel = () => {
         chrome.runtime.sendMessage({ type: 'CANCEL_CAPTURE' });
@@ -30488,7 +30500,18 @@ const Popup = () => {
                     "\u2717 Failed: ",
                     status.failureCount)),
             react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", { onClick: handleCancel, style: { backgroundColor: '#d93025', marginTop: '10px' } }, "Cancel Capture"))) : (react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", null,
-            react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", { style: { fontSize: '12px', color: '#666' } }, "Captures current tab and all tabs to the right"),
+            react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", { style: { fontSize: '12px', color: '#666', marginBottom: '12px' } }, "Captures current tab and all tabs to the right"),
+            react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", { style: { marginBottom: '16px', padding: '12px', backgroundColor: '#f8f9fa', borderRadius: '4px' } },
+                react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", { style: { fontSize: '11px', fontWeight: 'bold', marginBottom: '8px', color: '#5f6368' } }, "Capture Mode:"),
+                react__WEBPACK_IMPORTED_MODULE_0___default().createElement("label", { style: { display: 'block', marginBottom: '6px', cursor: 'pointer', fontSize: '12px' } },
+                    react__WEBPACK_IMPORTED_MODULE_0___default().createElement("input", { type: "radio", name: "mode", value: "page", checked: captureMode === 'page', onChange: handleModeChange, style: { marginRight: '6px' } }),
+                    react__WEBPACK_IMPORTED_MODULE_0___default().createElement("strong", null, "Page Only"),
+                    " - Fast, no dialogs"),
+                react__WEBPACK_IMPORTED_MODULE_0___default().createElement("label", { style: { display: 'block', cursor: 'pointer', fontSize: '12px' } },
+                    react__WEBPACK_IMPORTED_MODULE_0___default().createElement("input", { type: "radio", name: "mode", value: "window", checked: captureMode === 'window', onChange: handleModeChange, style: { marginRight: '6px' } }),
+                    react__WEBPACK_IMPORTED_MODULE_0___default().createElement("strong", null, "Full Window"),
+                    " - Includes URL bar")),
+            captureMode === 'window' && (react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", { style: { fontSize: '10px', color: '#ff6b00', marginBottom: '12px', fontWeight: 'bold' } }, "\u26A0\uFE0F Select \"Window\" (not \"Tab\") in the share dialog")),
             react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", { onClick: handleStart }, "Start Capture Sequence")))));
 };
 const container = document.getElementById('app');

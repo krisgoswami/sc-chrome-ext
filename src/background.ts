@@ -1,5 +1,5 @@
 
-// Background script with enhanced error handling and notifications
+// Background script with dual-mode capture support
 
 interface CaptureState {
   isCapturing: boolean;
@@ -11,6 +11,7 @@ interface CaptureState {
   failureCount: number;
   skippedCount: number;
   isCancelled: boolean;
+  mode: 'page' | 'window';
 }
 
 let state: CaptureState = {
@@ -21,7 +22,8 @@ let state: CaptureState = {
   successCount: 0,
   failureCount: 0,
   skippedCount: 0,
-  isCancelled: false
+  isCancelled: false,
+  mode: 'page'
 };
 
 // Utilities
@@ -48,15 +50,29 @@ function isRestrictedUrl(url: string | undefined): boolean {
     url.startsWith('chrome-extension://');
 }
 
+async function setupOffscreenDocument(path: string) {
+  const existingContexts = await chrome.runtime.getContexts({
+    contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT]
+  });
+
+  if (existingContexts.length > 0) {
+    return;
+  }
+
+  await chrome.offscreen.createDocument({
+    url: path,
+    reasons: [chrome.offscreen.Reason.DISPLAY_MEDIA],
+    justification: 'Recording window for screenshot sequence'
+  });
+}
+
 async function captureNext() {
-  // Check for cancellation
   if (state.isCancelled) {
     await finishCapture(true);
     return;
   }
 
   if (state.currentIndex >= state.tabsToCapture.length) {
-    // Done
     await finishCapture(false);
     return;
   }
@@ -69,10 +85,8 @@ async function captureNext() {
     return;
   }
 
-  // Update Badge
   chrome.action.setBadgeText({ text: `${state.currentIndex + 1}/${state.tabsToCapture.length}` });
 
-  // Check for restricted URLs
   if (isRestrictedUrl(tab.url)) {
     console.warn(`Skipping restricted URL: ${tab.url}`);
     state.skippedCount++;
@@ -83,11 +97,7 @@ async function captureNext() {
 
   // Activate tab
   try {
-    const updateResult = await chrome.tabs.update(tab.id, { active: true });
-
-    if (updateResult && updateResult.status === 'loading') {
-      // Tab is loading
-    }
+    await chrome.tabs.update(tab.id, { active: true });
   } catch (e) {
     console.error(`Failed to activate tab ${tab.id}:`, e);
     state.failureCount++;
@@ -96,37 +106,48 @@ async function captureNext() {
     return;
   }
 
-  // Helper wait function
   const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-  // Wait for render
-  await wait(800);
+  // Different wait times for different modes
+  const waitTime = state.mode === 'window' ? 1200 : 800;
+  await wait(waitTime);
 
   try {
-    // Retry logic for capture
     let dataUrl: string | undefined;
-    let attempts = 0;
-    while (!dataUrl && attempts < 3) {
-      try {
-        dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-      } catch (captureErr) {
-        console.warn(`Capture attempt ${attempts + 1} failed for tab ${tab.id}:`, captureErr);
-        attempts++;
-        if (attempts < 3) {
-          await wait(500);
+
+    if (state.mode === 'window') {
+      // Window mode: use offscreen capture
+      const response = await chrome.runtime.sendMessage({ type: 'CAPTURE_FRAME' });
+
+      if (!response || !response.dataUrl) {
+        throw new Error(response?.error || "Failed to capture frame from offscreen");
+      }
+      dataUrl = response.dataUrl;
+    } else {
+      // Page mode: use captureVisibleTab with retry
+      let attempts = 0;
+      while (!dataUrl && attempts < 3) {
+        try {
+          dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+        } catch (captureErr) {
+          console.warn(`Capture attempt ${attempts + 1} failed for tab ${tab.id}:`, captureErr);
+          attempts++;
+          if (attempts < 3) {
+            await wait(500);
+          }
         }
       }
-    }
 
-    if (!dataUrl) {
-      throw new Error("Failed to capture tab after 3 attempts");
+      if (!dataUrl) {
+        throw new Error("Failed to capture tab after 3 attempts");
+      }
     }
 
     const folderName = `tab-screenshots/${state.timestamp}`;
     const fileName = `${folderName}/tab-${(state.currentIndex + 1).toString().padStart(2, '0')}.png`;
 
     await chrome.downloads.download({
-      url: dataUrl,
+      url: dataUrl!,
       filename: fileName,
       saveAs: false
     });
@@ -142,7 +163,7 @@ async function captureNext() {
   captureNext();
 }
 
-async function startCapture() {
+async function startCapture(mode: 'page' | 'window' = 'page') {
   if (state.isCapturing) {
     showNotification('Already Capturing', 'A capture session is already in progress.');
     return;
@@ -163,31 +184,52 @@ async function startCapture() {
     return;
   }
 
-  // Filter out restricted URLs for initial count
   const capturableTabs = targetTabs.filter(t => !isRestrictedUrl(t.url));
 
   if (capturableTabs.length === 0) {
-    showNotification('No Capturable Tabs', 'All tabs are restricted URLs (chrome://, etc.) and cannot be captured.');
+    showNotification('No Capturable Tabs', 'All tabs are restricted URLs and cannot be captured.');
     return;
   }
 
-  // Initialize state
   state = {
     isCapturing: true,
     originalTabId: currentTab.id || null,
-    tabsToCapture: targetTabs, // Include all, we'll skip restricted ones
+    tabsToCapture: targetTabs,
     currentIndex: 0,
     successCount: 0,
     failureCount: 0,
     skippedCount: 0,
-    isCancelled: false
+    isCancelled: false,
+    mode: mode
   };
   // @ts-ignore
   state.timestamp = getTimestamp();
 
   chrome.action.setBadgeBackgroundColor({ color: '#4285f4' });
 
-  captureNext();
+  try {
+    if (mode === 'window') {
+      // Window mode: setup offscreen
+      await setupOffscreenDocument('offscreen.html');
+
+      const initResponse = await chrome.runtime.sendMessage({ type: 'INIT_DISPLAY_CAPTURE' });
+
+      if (!initResponse || !initResponse.success) {
+        throw new Error(initResponse?.error || 'Failed to initialize display capture');
+      }
+
+      await new Promise(r => setTimeout(r, 800));
+    }
+
+    captureNext();
+  } catch (e) {
+    console.error("Failed to setup capture", e);
+    showNotification('Error', mode === 'window'
+      ? 'Failed to initialize screen capture. Make sure you selected a window to share.'
+      : 'Failed to start capture. Please try again.');
+    state.isCapturing = false;
+    chrome.action.setBadgeText({ text: '' });
+  }
 }
 
 async function cancelCapture() {
@@ -201,6 +243,16 @@ async function finishCapture(cancelled: boolean) {
   state.isCapturing = false;
   chrome.action.setBadgeText({ text: '' });
 
+  // Stop and close offscreen if in window mode
+  if (state.mode === 'window') {
+    try {
+      await chrome.runtime.sendMessage({ type: 'STOP_CAPTURE' });
+      await chrome.offscreen.closeDocument();
+    } catch (e) {
+      // Ignore if already closed
+    }
+  }
+
   // Restore original tab
   if (state.originalTabId) {
     try {
@@ -210,9 +262,7 @@ async function finishCapture(cancelled: boolean) {
     }
   }
 
-  // Show completion notification
   if (!cancelled) {
-    const total = state.successCount + state.failureCount + state.skippedCount;
     let message = `✓ ${state.successCount} captured`;
 
     if (state.skippedCount > 0) {
@@ -230,7 +280,7 @@ async function finishCapture(cancelled: boolean) {
 // Listeners
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'START_CAPTURE') {
-    startCapture();
+    startCapture(message.mode || 'page');
     sendResponse({ success: true });
   } else if (message.type === 'CANCEL_CAPTURE') {
     cancelCapture();
