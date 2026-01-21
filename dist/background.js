@@ -9,7 +9,7 @@
 () {
 
 
-// Background script with fixed desktop capture support
+// Background script with dual-mode capture support
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -27,7 +27,8 @@ let state = {
     successCount: 0,
     failureCount: 0,
     skippedCount: 0,
-    isCancelled: false
+    isCancelled: false,
+    mode: 'page'
 };
 // Utilities
 function getTimestamp() {
@@ -103,17 +104,42 @@ function captureNext() {
             return;
         }
         const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-        yield wait(1200); // Longer wait for window capture to settle
+        // Different wait times for different modes
+        const waitTime = state.mode === 'window' ? 1200 : 800;
+        yield wait(waitTime);
         try {
-            // Request frame from offscreen
-            const response = yield chrome.runtime.sendMessage({ type: 'CAPTURE_FRAME' });
-            if (!response || !response.dataUrl) {
-                throw new Error((response === null || response === void 0 ? void 0 : response.error) || "Failed to capture frame from offscreen");
+            let dataUrl;
+            if (state.mode === 'window') {
+                // Window mode: use offscreen capture
+                const response = yield chrome.runtime.sendMessage({ type: 'CAPTURE_FRAME' });
+                if (!response || !response.dataUrl) {
+                    throw new Error((response === null || response === void 0 ? void 0 : response.error) || "Failed to capture frame from offscreen");
+                }
+                dataUrl = response.dataUrl;
+            }
+            else {
+                // Page mode: use captureVisibleTab with retry
+                let attempts = 0;
+                while (!dataUrl && attempts < 3) {
+                    try {
+                        dataUrl = yield chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+                    }
+                    catch (captureErr) {
+                        console.warn(`Capture attempt ${attempts + 1} failed for tab ${tab.id}:`, captureErr);
+                        attempts++;
+                        if (attempts < 3) {
+                            yield wait(500);
+                        }
+                    }
+                }
+                if (!dataUrl) {
+                    throw new Error("Failed to capture tab after 3 attempts");
+                }
             }
             const folderName = `tab-screenshots/${state.timestamp}`;
             const fileName = `${folderName}/tab-${(state.currentIndex + 1).toString().padStart(2, '0')}.png`;
             yield chrome.downloads.download({
-                url: response.dataUrl,
+                url: dataUrl,
                 filename: fileName,
                 saveAs: false
             });
@@ -128,7 +154,7 @@ function captureNext() {
     });
 }
 function startCapture() {
-    return __awaiter(this, void 0, void 0, function* () {
+    return __awaiter(this, arguments, void 0, function* (mode = 'page') {
         if (state.isCapturing) {
             showNotification('Already Capturing', 'A capture session is already in progress.');
             return;
@@ -158,25 +184,29 @@ function startCapture() {
             successCount: 0,
             failureCount: 0,
             skippedCount: 0,
-            isCancelled: false
+            isCancelled: false,
+            mode: mode
         };
         // @ts-ignore
         state.timestamp = getTimestamp();
         chrome.action.setBadgeBackgroundColor({ color: '#4285f4' });
         try {
-            yield setupOffscreenDocument('offscreen.html');
-            // Initialize display capture in offscreen document
-            const initResponse = yield chrome.runtime.sendMessage({ type: 'INIT_DISPLAY_CAPTURE' });
-            if (!initResponse || !initResponse.success) {
-                throw new Error((initResponse === null || initResponse === void 0 ? void 0 : initResponse.error) || 'Failed to initialize display capture');
+            if (mode === 'window') {
+                // Window mode: setup offscreen
+                yield setupOffscreenDocument('offscreen.html');
+                const initResponse = yield chrome.runtime.sendMessage({ type: 'INIT_DISPLAY_CAPTURE' });
+                if (!initResponse || !initResponse.success) {
+                    throw new Error((initResponse === null || initResponse === void 0 ? void 0 : initResponse.error) || 'Failed to initialize display capture');
+                }
+                yield new Promise(r => setTimeout(r, 800));
             }
-            // Give stream time to fully initialize
-            yield new Promise(r => setTimeout(r, 800));
             captureNext();
         }
         catch (e) {
-            console.error("Failed to setup offscreen", e);
-            showNotification('Error', 'Failed to initialize screen capture. Make sure you selected a window to share.');
+            console.error("Failed to setup capture", e);
+            showNotification('Error', mode === 'window'
+                ? 'Failed to initialize screen capture. Make sure you selected a window to share.'
+                : 'Failed to start capture. Please try again.');
             state.isCapturing = false;
             chrome.action.setBadgeText({ text: '' });
         }
@@ -194,13 +224,15 @@ function finishCapture(cancelled) {
     return __awaiter(this, void 0, void 0, function* () {
         state.isCapturing = false;
         chrome.action.setBadgeText({ text: '' });
-        // Stop and close offscreen
-        try {
-            yield chrome.runtime.sendMessage({ type: 'STOP_CAPTURE' });
-            yield chrome.offscreen.closeDocument();
-        }
-        catch (e) {
-            // Ignore if already closed
+        // Stop and close offscreen if in window mode
+        if (state.mode === 'window') {
+            try {
+                yield chrome.runtime.sendMessage({ type: 'STOP_CAPTURE' });
+                yield chrome.offscreen.closeDocument();
+            }
+            catch (e) {
+                // Ignore if already closed
+            }
         }
         // Restore original tab
         if (state.originalTabId) {
@@ -226,7 +258,7 @@ function finishCapture(cancelled) {
 // Listeners
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'START_CAPTURE') {
-        startCapture();
+        startCapture(message.mode || 'page');
         sendResponse({ success: true });
     }
     else if (message.type === 'CANCEL_CAPTURE') {
